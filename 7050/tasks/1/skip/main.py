@@ -1,11 +1,5 @@
-import random
+import os
 
-def get_random_boolean():
-  """
-  Returns a random boolean value (True or False).
-  """
-  return random.choice([True, False])
-
-# Example usage:
-random_value = get_random_boolean()
-print(random_value)
+print("--- Running mock skip script ---")
+print(f"Skipping task: {os.getenv('LAB_TASK_ID')}")
+print("--- Mock skip script finished ---")
