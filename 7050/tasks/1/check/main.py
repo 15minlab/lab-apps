@@ -11,15 +11,6 @@ K8S_CLUSTER_ID = os.getenv("K8S_CLUSTER_ID")
 LAB_TASK_ID = os.getenv("LAB_TASK_ID")
 NAMESPACE_NAME = "demo"
 INGRESS_NAME = "nginx-ingress"
-EXPECTED_INGRESS_CLASS_NAME = "nginx"
-AGGREGATED_KUBECONFIG_PATH = os.getenv("AGGREGATED_KUBECONFIG_PATH")
-
-
-# --- Configuration ---
-K8S_CLUSTER_ID = os.getenv("K8S_CLUSTER_ID")
-LAB_TASK_ID = os.getenv("LAB_TASK_ID")
-NAMESPACE_NAME = "demo"
-INGRESS_NAME = "nginx-ingress"
 INGRESS_CLASS_NAME = "nginx"
 
 
@@ -45,8 +36,8 @@ async def main():
     Main function to check the Ingress resource.
     """
     if not K8S_CLUSTER_ID:
-        print("K8S_CLUSTER_ID environment variable not set. Exiting.")
-        exit(1)
+        print("K8S_CLUSTER_ID not set. Exiting.")
+        return
 
     try:
         async with await _get_k8s_client(K8S_CLUSTER_ID) as api_client:
