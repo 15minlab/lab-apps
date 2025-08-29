@@ -15,24 +15,28 @@ EXPECTED_INGRESS_CLASS_NAME = "nginx"
 AGGREGATED_KUBECONFIG_PATH = os.getenv("AGGREGATED_KUBECONFIG_PATH")
 
 
+# --- Configuration ---
+K8S_CLUSTER_ID = os.getenv("K8S_CLUSTER_ID")
+LAB_TASK_ID = os.getenv("LAB_TASK_ID")
+NAMESPACE_NAME = "demo"
+INGRESS_NAME = "nginx-ingress"
+INGRESS_CLASS_NAME = "nginx"
+
+
 # --- Kubernetes Client Helper ---
 async def _get_k8s_client(cluster_context_name: str) -> ApiClient:
     """
-    Configures and returns an async Kubernetes API client using an aggregated kubeconfig.
+    Configures and returns an async Kubernetes API client.
+    This function is a placeholder that should match your controller's logic.
     """
-    if not AGGREGATED_KUBECONFIG_PATH:
-        print("AGGREGATED_KUBECONFIG_PATH environment variable not set.")
-        # Exit with a non-zero code to signal an environment configuration error.
-        exit(1)
+    kubeconfig_path = os.getenv("AGGREGATED_KUBECONFIG_PATH")
+    if not kubeconfig_path:
+        raise ValueError("AGGREGATED_KUBECONFIG_PATH environment variable not set.")
 
-    try:
-        await config.load_kube_config(
-            config_file=AGGREGATED_KUBECONFIG_PATH, context=cluster_context_name
-        )
-        return client.ApiClient()
-    except Exception as e:
-        print(f"Failed to load kubeconfig for context '{cluster_context_name}': {e}")
-        exit(1)
+    await config.load_kube_config(
+        config_file=kubeconfig_path, context=cluster_context_name
+    )
+    return client.ApiClient()
 
 
 # --- Main Script Logic ---
