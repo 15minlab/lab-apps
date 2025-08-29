@@ -1,8 +1,7 @@
-# main.py
-# This script checks for the presence of 'ingressClassName: nginx' in a Kubernetes Ingress resource.
-
 import os
 import asyncio
+import json
+import sys
 from kubernetes_asyncio import client, config
 from kubernetes_asyncio.client.api_client import ApiClient
 
@@ -33,19 +32,19 @@ async def _get_k8s_client(cluster_context_name: str) -> ApiClient:
 # --- Main Script Logic ---
 async def main():
     """
-    Main function to check the Ingress resource.
+    Main function to check the Ingress resource and return a JSON status.
     """
     if not K8S_CLUSTER_ID:
-        print("K8S_CLUSTER_ID not set. Exiting.")
-        return
+        print(
+            json.dumps(
+                {"status": "error", "message": "K8S_CLUSTER_ID not set. Exiting."}
+            )
+        )
+        sys.exit(1)
 
     try:
         async with await _get_k8s_client(K8S_CLUSTER_ID) as api_client:
             networking_v1 = client.NetworkingV1Api(api_client)
-
-            print(
-                f"--- Checking Ingress '{INGRESS_NAME}' in Namespace '{NAMESPACE_NAME}' ---"
-            )
 
             # Read the Ingress resource from the cluster
             ingress = await networking_v1.read_namespaced_ingress(
@@ -57,36 +56,62 @@ async def main():
                 ingress.spec
                 and ingress.spec.ingress_class_name == EXPECTED_INGRESS_CLASS_NAME
             ):
+                # Return success message as a JSON object to standard output
                 print(
-                    f"✅ SUCCESS: Ingress has 'ingressClassName: {EXPECTED_INGRESS_CLASS_NAME}'."
+                    json.dumps(
+                        {
+                            "status": "success",
+                            "message": f"Ingress has 'ingressClassName: {EXPECTED_INGRESS_CLASS_NAME}'.",
+                        }
+                    )
                 )
-                print("Check complete. Lab is in the correct state.")
-                exit(0)  # Exit with code 0 for success
             else:
                 current_class = (
                     ingress.spec.ingress_class_name
                     if ingress.spec and ingress.spec.ingress_class_name
                     else "missing"
                 )
+                # Return failure message as a JSON object to standard output
                 print(
-                    f"❌ FAILURE: Ingress is present, but 'ingressClassName' is '{current_class}'."
+                    json.dumps(
+                        {
+                            "status": "failed",
+                            "message": f"Ingress is present, but 'ingressClassName' is '{current_class}'. Expected: '{EXPECTED_INGRESS_CLASS_NAME}'.",
+                        }
+                    )
                 )
-                print(f"Expected: '{EXPECTED_INGRESS_CLASS_NAME}'.")
-                print("Check complete. Lab is not in the correct state.")
-                exit(1)  # Exit with code 1 for failure
 
     except client.ApiException as e:
         if e.status == 404:
+            # Return failure message for a 404 error
             print(
-                f"❌ FAILURE: Ingress '{INGRESS_NAME}' not found in namespace '{NAMESPACE_NAME}'."
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "message": f"Ingress '{INGRESS_NAME}' not found in namespace '{NAMESPACE_NAME}'.",
+                    }
+                )
             )
-            exit(1)
+            sys.exit(1)
         else:
-            print(f"An unexpected Kubernetes API error occurred: {e}")
-            exit(1)
+            # Re-raise for unexpected API errors
+            print(
+                json.dumps(
+                    {
+                        "status": "error",
+                        "message": f"An unexpected Kubernetes API error occurred: {e}",
+                    }
+                )
+            )
+            sys.exit(1)
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
-        exit(1)
+        # Return a general error message for any other exception
+        print(
+            json.dumps(
+                {"status": "error", "message": f"An unexpected error occurred: {e}"}
+            )
+        )
+        sys.exit(1)
 
 
 if __name__ == "__main__":
