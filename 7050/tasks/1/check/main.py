@@ -12,22 +12,27 @@ LAB_TASK_ID = os.getenv("LAB_TASK_ID")
 NAMESPACE_NAME = "demo"
 INGRESS_NAME = "nginx-ingress"
 EXPECTED_INGRESS_CLASS_NAME = "nginx"
+AGGREGATED_KUBECONFIG_PATH = os.getenv("AGGREGATED_KUBECONFIG_PATH")
 
 
 # --- Kubernetes Client Helper ---
 async def _get_k8s_client(cluster_context_name: str) -> ApiClient:
     """
-    Configures and returns an async Kubernetes API client.
-    This function is a placeholder that should match your controller's logic.
+    Configures and returns an async Kubernetes API client using an aggregated kubeconfig.
     """
-    kubeconfig_path = os.getenv("AGGREGATED_KUBECONFIG_PATH")
-    if not kubeconfig_path:
-        raise ValueError("AGGREGATED_KUBECONFIG_PATH environment variable not set.")
+    if not AGGREGATED_KUBECONFIG_PATH:
+        print("AGGREGATED_KUBECONFIG_PATH environment variable not set.")
+        # Exit with a non-zero code to signal an environment configuration error.
+        exit(1)
 
-    await config.load_kube_config(
-        config_file=kubeconfig_path, context=cluster_context_name
-    )
-    return client.ApiClient()
+    try:
+        await config.load_kube_config(
+            config_file=AGGREGATED_KUBECONFIG_PATH, context=cluster_context_name
+        )
+        return client.ApiClient()
+    except Exception as e:
+        print(f"Failed to load kubeconfig for context '{cluster_context_name}': {e}")
+        exit(1)
 
 
 # --- Main Script Logic ---
@@ -36,17 +41,17 @@ async def main():
     Main function to check the Ingress resource.
     """
     if not K8S_CLUSTER_ID:
-        print("K8S_CLUSTER_ID not set. Exiting.")
+        print("K8S_CLUSTER_ID environment variable not set. Exiting.")
         exit(1)
 
-    async with await _get_k8s_client(K8S_CLUSTER_ID) as api_client:
-        networking_v1 = client.NetworkingV1Api(api_client)
+    try:
+        async with await _get_k8s_client(K8S_CLUSTER_ID) as api_client:
+            networking_v1 = client.NetworkingV1Api(api_client)
 
-        print(
-            f"--- Checking Ingress '{INGRESS_NAME}' in Namespace '{NAMESPACE_NAME}' ---"
-        )
+            print(
+                f"--- Checking Ingress '{INGRESS_NAME}' in Namespace '{NAMESPACE_NAME}' ---"
+            )
 
-        try:
             # Read the Ingress resource from the cluster
             ingress = await networking_v1.read_namespaced_ingress(
                 name=INGRESS_NAME, namespace=NAMESPACE_NAME
@@ -75,18 +80,18 @@ async def main():
                 print("Check complete. Lab is not in the correct state.")
                 exit(1)  # Exit with code 1 for failure
 
-        except client.ApiException as e:
-            if e.status == 404:
-                print(
-                    f"❌ FAILURE: Ingress '{INGRESS_NAME}' not found in namespace '{NAMESPACE_NAME}'."
-                )
-                exit(1)
-            else:
-                print(f"An unexpected Kubernetes API error occurred: {e}")
-                exit(1)
-        except Exception as e:
-            print(f"An unexpected error occurred: {e}")
+    except client.ApiException as e:
+        if e.status == 404:
+            print(
+                f"❌ FAILURE: Ingress '{INGRESS_NAME}' not found in namespace '{NAMESPACE_NAME}'."
+            )
             exit(1)
+        else:
+            print(f"An unexpected Kubernetes API error occurred: {e}")
+            exit(1)
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+        exit(1)
 
 
 if __name__ == "__main__":
