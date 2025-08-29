@@ -11,7 +11,7 @@ K8S_CLUSTER_ID = os.getenv("K8S_CLUSTER_ID")
 LAB_TASK_ID = os.getenv("LAB_TASK_ID")
 NAMESPACE_NAME = "demo"
 INGRESS_NAME = "nginx-ingress"
-INGRESS_CLASS_NAME = "nginx"
+EXPECTED_INGRESS_CLASS_NAME = "nginx"
 
 
 # --- Kubernetes Client Helper ---
