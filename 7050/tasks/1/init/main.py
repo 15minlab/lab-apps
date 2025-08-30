@@ -1,185 +1,360 @@
 import os
+import shutil
 import asyncio
+import logging
+import redis
 import json
+from pathlib import Path
+from fastapi import APIRouter, HTTPException, status
+from pydantic import BaseModel, Field
+from dotenv import load_dotenv
 from kubernetes_asyncio import client, config
 from kubernetes_asyncio.client.api_client import ApiClient
+from kubernetes_asyncio.client.exceptions import ApiException
 
-# --- Configuration ---
-# The script gets its configuration from environment variables set by the API controller.
-K8S_CLUSTER_ID = os.getenv("K8S_CLUSTER_ID")
-LAB_TASK_ID = os.getenv("LAB_TASK_ID")
-NAMESPACE_NAME = "demo"
-INGRESS_DOMAIN = "demo.15minlab.com"
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+# Load environment variables from the .env file
+load_dotenv()
+
+# --- Redis Configuration ---
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+REDIS_DB = int(os.getenv("REDIS_DB", 0))
+
+try:
+    r = redis.Redis(
+        host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True
+    )
+    r.ping()
+    logger.info("Successfully connected to Redis.")
+except redis.exceptions.ConnectionError as e:
+    logger.error(f"Could not connect to Redis: {e}")
+    r = None
+
+# Directory to store the cloned repos. Must be a shared volume.
+CACHE_DIR = Path(os.getenv("CACHE_DIR", "/data/lab_repo_cache"))
+
+# Ensure the cache directory exists
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+# --- GitHub PAT Configuration ---
+GITHUB_PAT = os.getenv("GITHUB_PAT")
+if not GITHUB_PAT:
+    logger.warning(
+        "GITHUB_PAT environment variable not set. Cloning will fail for private repositories."
+    )
+
+# --- Kubernetes Client Cache ---
+_k8s_client_cache = {}
 
 
-# --- Kubernetes Client Helper ---
-# This function assumes you have a helper function to load the kubeconfig.
-# This is required for the script to be runnable on its own for testing.
+# --- Pydantic Model and Router ---
+class LabRequest(BaseModel):
+    lab_template_source: str
+    lab_template_revision: str
+    lab_template_path: str
+    action: str
+    k8s_cluster_id: str
+    lab_owner: str = Field(..., description="The owner/user of the lab template.")
+    task_id: int = Field(..., description="A unique identifier for the lab task.")
+
+
+router = APIRouter(
+    prefix="/lab",
+    tags=["Lab Controller"],
+)
+
+
+async def _run_subprocess(command: list, cwd: Path = None, env: dict = None):
+    """
+    Asynchronously runs a subprocess and handles stdout/stderr.
+    Returns the stdout and stderr as strings.
+    Raises a RuntimeError on a non-zero exit code.
+    """
+    logger.info(f"Executing command: {' '.join(command)}")
+    proc = await asyncio.create_subprocess_exec(
+        *command,
+        cwd=cwd,
+        env=env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    stdout_str = stdout.decode()
+    stderr_str = stderr.decode()
+    if proc.returncode != 0:
+        logger.error(f"Command failed with exit code {proc.returncode}")
+        logger.error(f"Stdout:\n{stdout_str}")
+        logger.error(f"Stderr:\n{stderr_str}")
+        raise RuntimeError(
+            f"Command failed with exit code {proc.returncode}. Stderr: {stderr_str}"
+        )
+    return stdout_str, stderr_str
+
+
+async def _get_repo_path(source: str, revision: str) -> Path:
+    """
+    Clones or updates a git repository using non-blocking I/O and Redis for caching.
+    Includes robust path validation.
+    """
+    if not r:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Caching service is unavailable. Please check the Redis connection.",
+        )
+
+    # Sanitize the source URL for a valid Redis key and directory name
+    safe_source = (
+        source.replace("https://", "")
+        .replace("http://", "")
+        .replace("git@", "")
+        .replace(":", "_")
+        .replace("/", "_")
+        .replace(".", "_")
+    )
+    repo_key = f"lab_repo:{safe_source}:{revision}"
+
+    repo_path_str = r.get(repo_key)
+    repo_path = CACHE_DIR / f"{safe_source}_{revision}"
+
+    if repo_path_str and Path(repo_path_str).exists():
+        # --- Cache Hit ---
+        repo_path = Path(repo_path_str)
+        logger.info(f"Cache hit for {source}:{revision}. Updating repository...")
+        try:
+            # Use async subprocess to pull latest changes
+            await _run_subprocess(["git", "pull"], cwd=repo_path)
+            logger.info("Repository updated successfully.")
+            return repo_path
+        except RuntimeError as e:
+            logger.error(f"Error updating repository: {e}")
+            # Invalidate cache and fall through to re-clone
+            r.delete(repo_key)
+            logger.info("Cache invalidated. Attempting to re-clone...")
+
+    # --- Cache Miss or Update Failure ---
+    logger.info(f"Cache miss for {source}:{revision}. Cloning new repository...")
+
+    # Robustly remove the old directory if it exists before cloning
+    if repo_path.exists() and repo_path.is_dir():
+        logger.info(f"Destination path {repo_path} already exists. Removing...")
+        shutil.rmtree(repo_path)
+
+    # Prepare authenticated source URL
+    if GITHUB_PAT and "github.com" in source:
+        auth_source = source.replace("https://", f"https://oauth2:{GITHUB_PAT}@")
+    else:
+        auth_source = source
+
+    try:
+        # Use async subprocess to clone
+        await _run_subprocess(
+            [
+                "git",
+                "clone",
+                "--depth",
+                "1",
+                "--branch",
+                revision,
+                auth_source,
+                str(repo_path),
+            ]
+        )
+        r.set(repo_key, str(repo_path))
+        r.expire(repo_key, 86400)
+        logger.info(f"Repository cloned and added to Redis cache with key {repo_key}.")
+        return repo_path
+    except RuntimeError as e:
+        logger.error(f"Error cloning repository: {e}")
+        error_detail = "Failed to clone repository. Check URL and credentials, and ensure the specified branch/revision exists."
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=error_detail
+        )
+
+
 async def _get_k8s_client(cluster_context_name: str) -> ApiClient:
     """
-    Configures and returns an async Kubernetes API client using an aggregated kubeconfig.
-    This function is a placeholder and should match the one in your controller.
+    Configures and returns an async Kubernetes API client from a cache.
     """
-    # Placeholder for local testing, assuming an aggregated kubeconfig exists.
-    kubeconfig_path = os.getenv("AGGREGATED_KUBECONFIG_PATH")
-    if not kubeconfig_path:
-        raise ValueError("AGGREGATED_KUBECONFIG_PATH environment variable not set.")
-
-    await config.load_kube_config(
-        config_file=kubeconfig_path, context=cluster_context_name
-    )
-    return client.ApiClient()
-
-
-# --- Main Script Logic ---
-async def main():
-    """
-    Main function to create and manage Kubernetes resources.
-    """
-    if not K8S_CLUSTER_ID:
-        print(
-            json.dumps(
-                {"status": "error", "message": "K8S_CLUSTER_ID not set. Exiting."}
-            )
+    if cluster_context_name in _k8s_client_cache:
+        logger.info(
+            f"Using cached Kubernetes client for context '{cluster_context_name}'."
         )
-        exit(1)
+        return _k8s_client_cache[cluster_context_name]
 
-    result = {
-        "namespace_status": "in_progress",
-        "deployment_status": "in_progress",
-        "service_status": "in_progress",
-        "ingress_status": "in_progress",
-        "final_status": "failed",
+    try:
+        # Load the kubeconfig file, context is handled by k8s_asyncio
+        await config.load_kube_config(context=cluster_context_name)
+        client_instance = client.ApiClient()
+        _k8s_client_cache[cluster_context_name] = client_instance
+        logger.info(
+            f"New Kubernetes client created and cached for context '{cluster_context_name}'."
+        )
+        return client_instance
+    except Exception as e:
+        logger.error(
+            f"Error loading K8s config for context '{cluster_context_name}': {e}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to connect to Kubernetes cluster via context '{cluster_context_name}'.",
+        )
+
+
+async def _execute_script(script_path: Path, request_data: dict):
+    """
+    Executes the main.py script to get K8s resource definitions and then
+    creates them on the cluster, prefixing names with the lab_owner.
+    """
+    if not script_path.exists():
+        raise FileNotFoundError(f"Script not found at: {script_path}")
+
+    # Use _run_subprocess to execute the script and capture its output
+    logger.info(f"Executing Python script: {script_path} to get resource definitions")
+    try:
+        stdout, _ = await _run_subprocess(["python3", str(script_path)])
+        resources = json.loads(stdout)
+        if not isinstance(resources, list):
+            raise ValueError("Script did not return a list of Kubernetes resources.")
+    except (RuntimeError, json.JSONDecodeError, ValueError) as e:
+        logger.error(f"Script execution failed or returned invalid JSON: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Script failed to return valid Kubernetes resource definitions: {e}",
+        )
+
+    # Get the Kubernetes API client
+    k8s_client = await _get_k8s_client(request_data["k8s_cluster_id"])
+    lab_owner = request_data["lab_owner"]
+    created_resources = []
+
+    # Map for API clients based on API version
+    api_map = {
+        "apps/v1": client.AppsV1Api(k8s_client),
+        "core/v1": client.CoreV1Api(k8s_client),
     }
 
-    async with await _get_k8s_client(K8S_CLUSTER_ID) as api_client:
-        core_v1 = client.CoreV1Api(api_client)
-        apps_v1 = client.AppsV1Api(api_client)
-        networking_v1 = client.NetworkingV1Api(api_client)
+    # Iterate through the resources and create them
+    for resource in resources:
+        kind = resource.get("kind")
+        api_version = resource.get("apiVersion")
+        name = resource.get("metadata", {}).get("name")
+        namespace = resource.get("metadata", {}).get("namespace", "default")
 
+        if not all([kind, api_version, name]):
+            logger.error("Skipping malformed resource: %s", json.dumps(resource))
+            continue
+
+        # Prefix the resource name with the lab owner's name
+        prefixed_name = f"{lab_owner}-{name}"
+        resource["metadata"]["name"] = prefixed_name
+
+        # Add a custom label for easier lookup
+        if "labels" not in resource["metadata"]:
+            resource["metadata"]["labels"] = {}
+        resource["metadata"]["labels"]["lab-owner"] = lab_owner
+
+        # Special handling for related resources (e.g., Deployments with a selector)
+        if kind == "Deployment":
+            # Update the selector and template labels to match the new prefixed name
+            resource["spec"]["selector"]["matchLabels"]["app"] = prefixed_name
+            resource["spec"]["template"]["metadata"]["labels"]["app"] = prefixed_name
+        elif kind == "Service":
+            # Update the service selector to match the new prefixed deployment
+            resource["spec"]["selector"]["app"] = prefixed_name
+
+        # Get the correct API client for this resource
+        api = api_map.get(api_version)
+        if not api:
+            logger.warning(
+                f"No API client found for apiVersion: {api_version}. Skipping."
+            )
+            continue
+
+        # Call the appropriate creation method
         try:
-            # Step 1: Create Namespace
-            try:
-                namespace_body = client.V1Namespace(
-                    metadata=client.V1ObjectMeta(name=NAMESPACE_NAME)
-                )
-                await core_v1.create_namespace(body=namespace_body)
-                result["namespace_status"] = "created"
-            except client.ApiException as e:
-                if e.status == 409:
-                    result["namespace_status"] = "already_exists"
-                else:
-                    raise
+            # We use a dictionary to map kind to method call for clarity and safety
+            create_methods = {
+                "Deployment": api.create_namespaced_deployment,
+                "Service": api.create_namespaced_service,
+                # Add other resource types here as needed
+            }
+            create_method = create_methods.get(kind)
+            if not create_method:
+                logger.warning(f"No creation method found for kind: {kind}. Skipping.")
+                continue
 
-            # Step 2: Create Deployment
-            try:
-                deployment_body = client.V1Deployment(
-                    metadata=client.V1ObjectMeta(
-                        name="nginx-deployment", namespace=NAMESPACE_NAME
-                    ),
-                    spec=client.V1DeploymentSpec(
-                        replicas=1,
-                        selector=client.V1LabelSelector(
-                            match_labels={"app": "nginx-demo"}
-                        ),
-                        template=client.V1PodTemplateSpec(
-                            metadata=client.V1ObjectMeta(labels={"app": "nginx-demo"}),
-                            spec=client.V1PodSpec(
-                                containers=[
-                                    client.V1Container(
-                                        name="nginx",
-                                        image="nginx:latest",
-                                        ports=[
-                                            client.V1ContainerPort(container_port=80)
-                                        ],
-                                    )
-                                ]
-                            ),
-                        ),
-                    ),
-                )
-                await apps_v1.create_namespaced_deployment(
-                    namespace=NAMESPACE_NAME, body=deployment_body
-                )
-                result["deployment_status"] = "created"
-            except client.ApiException as e:
-                if e.status == 409:
-                    result["deployment_status"] = "already_exists"
-                else:
-                    raise
+            response = await create_method(namespace=namespace, body=resource)
+            created_resources.append(f"{kind}/{response.metadata.name}")
+            logger.info(f"Successfully created {kind} '{response.metadata.name}'")
+        except ApiException as e:
+            logger.error(f"Error creating {kind} '{name}': {e.body}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to create {kind} '{name}': {e.body}",
+            )
 
-            # Step 3: Create Service
-            try:
-                service_body = client.V1Service(
-                    metadata=client.V1ObjectMeta(
-                        name="nginx-service", namespace=NAMESPACE_NAME
-                    ),
-                    spec=client.V1ServiceSpec(
-                        selector={"app": "nginx-demo"},
-                        ports=[client.V1ServicePort(port=80, target_port=80)],
-                        type="ClusterIP",
-                    ),
-                )
-                await core_v1.create_namespaced_service(
-                    namespace=NAMESPACE_NAME, body=service_body
-                )
-                result["service_status"] = "created"
-            except client.ApiException as e:
-                if e.status == 409:
-                    result["service_status"] = "already_exists"
-                else:
-                    raise
-
-            # Step 4: Create Ingress
-            try:
-                ingress_body = client.V1Ingress(
-                    metadata=client.V1ObjectMeta(
-                        name="nginx-ingress", namespace=NAMESPACE_NAME
-                    ),
-                    spec=client.V1IngressSpec(
-                        rules=[
-                            client.V1IngressRule(
-                                host=INGRESS_DOMAIN,
-                                http=client.V1HTTPIngressRuleValue(
-                                    paths=[
-                                        client.V1HTTPIngressPath(
-                                            path="/",
-                                            path_type="Prefix",
-                                            backend=client.V1IngressBackend(
-                                                service=client.V1IngressServiceBackend(
-                                                    name="nginx-service",
-                                                    port=client.V1ServiceBackendPort(
-                                                        number=80
-                                                    ),
-                                                ),
-                                            ),
-                                        ),
-                                    ]
-                                ),
-                            )
-                        ],
-                    ),
-                )
-                await networking_v1.create_namespaced_ingress(
-                    namespace=NAMESPACE_NAME, body=ingress_body
-                )
-                result["ingress_status"] = "created"
-            except client.ApiException as e:
-                if e.status == 409:
-                    result["ingress_status"] = "already_exists"
-                else:
-                    raise
-
-            result["final_status"] = "success"
-            result["message"] = f"Lab resources created for task {LAB_TASK_ID}."
-            result["access_url"] = f"http://{INGRESS_DOMAIN}"
-
-        except Exception as e:
-            result["final_status"] = "error"
-            result["message"] = f"Script failed with an error: {e}"
-        finally:
-            print(json.dumps(result, indent=2))
+    return {
+        "result": "success",
+        "message": f"Successfully created the following resources: {', '.join(created_resources)}",
+        "details": {"created_resources": created_resources},
+    }
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+@router.post("/")
+async def handle_lab_action(request: LabRequest):
+    """
+    Handles dynamic lab actions based on the request using the provided script path.
+    """
+    try:
+        # 1. Get the local repository path
+        repo_local_path = await _get_repo_path(
+            request.lab_template_source, request.lab_template_revision
+        )
+
+        # 2. Construct the full script path with validation
+        sanitized_lab_path = Path(request.lab_template_path)
+        sanitized_action = Path(request.action).name
+
+        script_path = (
+            repo_local_path
+            / sanitized_lab_path
+            / str(request.task_id)
+            / sanitized_action
+            / "main.py"
+        )
+
+        # Resolve the final path to ensure it's a child of the repo path
+        resolved_path = script_path.resolve()
+        if not str(resolved_path).startswith(str(repo_local_path.resolve())):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid script path: Path is not contained within the repository.",
+            )
+
+        # 3. Check if the script exists
+        if not resolved_path.exists():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Script not found at: {resolved_path}",
+            )
+
+        # 4. Execute the script and get its output
+        result = await _execute_script(resolved_path, request.dict())
+
+        return {
+            "result": "success",
+            "message": result["message"],
+            "details": result.get("details", {}),
+        }
+
+    except HTTPException as e:
+        return {"result": "failed", "message": e.detail, "status_code": e.status_code}
+    except Exception as e:
+        logger.error(f"An unexpected error occurred: {e}", exc_info=True)
+        return {"result": "error", "message": f"An unexpected error occurred: {e}"}
