@@ -2,7 +2,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: nginx
-  namespace: { { printf "%s-nginx" .Values.prefix } }
+  namespace: {{ printf "%s-nginx" .Values.prefix }}
   labels:
     app: nginx
 spec:
