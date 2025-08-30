@@ -1,3 +1,4 @@
+import asyncio
 from http.client import HTTPException
 from http import HTTPStatus
 import os
@@ -75,4 +76,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
