@@ -1,4 +1,5 @@
-from http.client import HTTPException, status
+from http.client import HTTPException
+from http import HTTPStatus
 import os
 import logging
 import json
@@ -33,7 +34,7 @@ async def _get_k8s_client(cluster_context_name: str) -> ApiClient:
     except Exception as e:
         print(f"Error loading K8s config for context '{cluster_context_name}': {e}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=HTTPStatus.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to connect to Kubernetes cluster via context '{cluster_context_name}'.",
         )
 
