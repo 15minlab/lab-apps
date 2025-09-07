@@ -10,7 +10,7 @@ K8S_CLUSTER_ID = os.getenv("K8S_CLUSTER_ID")
 LAB_TASK_ID = os.getenv("LAB_TASK_ID")
 NAMESPACE_NAME = "demo"
 INGRESS_NAME = "nginx-ingress"
-INGRESS_CLASS_NAME = "nginx"
+EXPECTED_INGRESS_CLASS_NAME = "nginx"
 
 
 # --- Kubernetes Client Helper ---
@@ -32,7 +32,7 @@ async def _get_k8s_client(cluster_context_name: str) -> ApiClient:
 # --- Main Script Logic ---
 async def main():
     """
-    Main function to update Kubernetes resources and return a JSON status.
+    Main function to check the Ingress resource and return a JSON status.
     """
     if not K8S_CLUSTER_ID:
         print(
@@ -42,50 +42,79 @@ async def main():
         )
         sys.exit(1)
 
-    async with await _get_k8s_client(K8S_CLUSTER_ID) as api_client:
-        networking_v1 = client.NetworkingV1Api(api_client)
+    try:
+        async with await _get_k8s_client(K8S_CLUSTER_ID) as api_client:
+            networking_v1 = client.NetworkingV1Api(api_client)
 
-        try:
-            # Define the patch body. Only include the fields you want to change.
-            patch_body = {"spec": {"ingressClassName": INGRESS_CLASS_NAME}}
-
-            # Use the patch_namespaced_ingress method to apply the update
-            await networking_v1.patch_namespaced_ingress(
-                name=INGRESS_NAME, namespace=NAMESPACE_NAME, body=patch_body
+            # Read the Ingress resource from the cluster
+            ingress = await networking_v1.read_namespaced_ingress(
+                name=INGRESS_NAME, namespace=NAMESPACE_NAME
             )
 
-            # Return success message as a JSON object to standard output
-            print(
-                json.dumps(
-                    {
-                        "status": "success",
-                        "message": f"Ingress '{INGRESS_NAME}' successfully patched with ingressClassName: '{INGRESS_CLASS_NAME}'.",
-                    }
+            # Check for the ingressClassName field
+            if (
+                ingress.spec
+                and ingress.spec.ingress_class_name == EXPECTED_INGRESS_CLASS_NAME
+            ):
+                # Return success message as a JSON object to standard output
+                print(
+                    json.dumps(
+                        {
+                            "status": "success",
+                            "message": f"Ingress has 'ingressClassName: {EXPECTED_INGRESS_CLASS_NAME}'.",
+                        }
+                    )
                 )
-            )
-        except client.ApiException as e:
-            # Handle specific Kubernetes API errors and return a JSON failure message
-            if e.status == 404:
+            else:
+                current_class = (
+                    ingress.spec.ingress_class_name
+                    if ingress.spec and ingress.spec.ingress_class_name
+                    else "missing"
+                )
+                # Return failure message as a JSON object to standard output
                 print(
                     json.dumps(
                         {
                             "status": "failed",
-                            "message": f"Ingress '{INGRESS_NAME}' not found. Cannot update.",
+                            "message": f"Ingress is present, but 'ingressClassName' is '{current_class}'. Expected: '{EXPECTED_INGRESS_CLASS_NAME}'.",
                         }
                     )
                 )
-                sys.exit(1)
-            else:
-                raise
 
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
+    except client.ApiException as e:
+        if e.status == 404:
+            # Return failure message for a 404 error
+            print(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "message": f"Ingress '{INGRESS_NAME}' not found in namespace '{NAMESPACE_NAME}'.",
+                    }
+                )
+            )
+            sys.exit(1)
+        else:
+            # Re-raise for unexpected API errors
+            print(
+                json.dumps(
+                    {
+                        "status": "error",
+                        "message": f"An unexpected Kubernetes API error occurred: {e}",
+                    }
+                )
+            )
+            sys.exit(1)
     except Exception as e:
+        # Return a general error message for any other exception
         print(
             json.dumps(
-                {"status": "error", "message": f"Script failed with an error: {e}"}
+                {"status": "error", "message": f"An unexpected error occurred: {e}"}
             )
         )
         sys.exit(1)
+
+
+# --- End Main Script ---
+
+if __name__ == "__main__":
+    asyncio.run(main())
