@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ printf "%s-workbench" .Values.prefix }}
+  namespace: lab-workbench
+  labels:
+    app: workbench
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: workbench
+  template:
+    metadata:
+      labels:
+        app: workbench
+    spec:
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+      containers:
+        - name: workbench
+          image: harbor.15minlab.com/15ml/workbench@sha256:de7981f7377aaff0ebe510f857fde8c6c9f98c39810b9bdf2860801dc7bca71e
+          ports:
+            - containerPort: 22
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              add:
+                - SYS_CHROOT
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
