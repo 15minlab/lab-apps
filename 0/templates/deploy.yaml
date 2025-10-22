@@ -1,39 +1,49 @@
-apiVersion: apps/v1
 kind: Deployment
+apiVersion: apps/v1
 metadata:
-  name: {{ printf "%s-workbench" .Values.prefix }}
+  name: mariahi-workbench
   namespace: mariahi-lab-workbench
   labels:
-    app: workbench
+    app: mariahi-workbench
+    app.kubernetes.io/instance: mariahi-workbench
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: workbench
+      app: mariahi-workbench
   template:
     metadata:
+      creationTimestamp: null
       labels:
-        app: workbench
+        app: mariahi-workbench
     spec:
+      containers:
+      - name: workbench
+        image: 'quay.apps.hlab.linsoft.local/15ml/lab-workbench@sha256:82f87aacd88a75596745cfbf559de08087df61110a6e2dab4fb47f96abb364a1'
+        ports:
+        - containerPort: 22
+          protocol: TCP
+        resources:
+          limits:
+            cpu: 200m
+            memory: 128Mi
+          requests:
+            cpu: 50m
+            memory: 64Mi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        imagePullPolicy: IfNotPresent
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30
+      dnsPolicy: ClusterFirst
       securityContext:
         runAsUser: 0
         runAsGroup: 0
-      containers:
-        - name: workbench
-          image: quay.apps.hlab.linsoft.local/15ml/lab-workbench@sha256:82f87aacd88a75596745cfbf559de08087df61110a6e2dab4fb47f96abb364a1
-          ports:
-            - containerPort: 22
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              add:
-                - SYS_CHROOT
-          resources:
-            requests:
-              cpu: "50m"
-              memory: "64Mi"
-            limits:
-              cpu: "200m"
-              memory: "128Mi"
-      imagepullSecrets:
-        - name: lab-registry-secret
+      imagePullSecrets:
+      - name: lab-registry-secret
+      schedulerName: default-scheduler
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 25%
+      maxSurge: 25%
