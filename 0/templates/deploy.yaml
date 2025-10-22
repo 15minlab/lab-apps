@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ printf "%s-workbench" .Values.prefix }}
-  namespace: lab-workbench
+  namespace: mariahi-lab-workbench
   labels:
     app: workbench
 spec:
