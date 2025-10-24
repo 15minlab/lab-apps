@@ -29,6 +29,29 @@ spec:
           requests:
             cpu: 50m
             memory: 64Mi
+        env:
+        - name: TZ
+          value: Africa/Tunis
+        - name: PUID
+          value: "1000"
+        - name: PGID
+          value: "1000"
+        - name: PUBLIC_KEY
+          value: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCGa8WI9EQwSubBOg5RF4Ik6btxE4kfx+VwJjD2k5HWSbBZkRP4HfF5LtOzwVzaDHxGxN/cG6TYZucN0gg5v5bGf9/c6aLRko8EHfMdIYpwl+quTaXrExe3Kyz5dIkuwjTIBxLXq7IzEgxgfIYBz8MHsk9tHxoxoP1siDr3VECvETeX0zJ7TYriO/mnDF0QqY5AeD4bLDjhm6ZCo7xHz9HLFagr7dvLeMNzNRoxltGaz/6GZdI813ER6vdolobT4bSWoRJQFnJw0ZRbu4rpBWJXatdCH+btds3F/TKycBTuqO6YpBEj0A3wuYblWBBdO7ZWV13GimEvGRSmKsvRoASv40T5+8kRvW2JAW1BInfQ0OvzcsEARIx77VvNrJxeKTsrMI0+3XLj8O/G1jKXBDDFM0CndK6aiAyhfk2G7wEv0ZekqxOx1ojmlr9I0k/SG9IOpTCbcY5f/7M5dKtjvW8MxqT1YfmIucGbKxRsCdsOJawdbo6g//R8Y/hW7qgESKk= root@workbench-k8s-0"
+        # - name: PUBLIC_KEY_FILE
+        #   value: "/path/to/file"
+        - name: SUDO_ACCESS
+          value: "false"
+        - name: PASSWORD_ACCESS
+          value: "true"
+        - name: USER_NAME
+          value: labuser
+        - name: USER_PASSWORD
+          value: "password"
+        # - name: USER_PASSWORD_FILE
+        #   value: "/path/to/file"
+        - name: LOG_STDOUT
+          value: ""
         terminationMessagePath: /dev/termination-log
         terminationMessagePolicy: File
         imagePullPolicy: Always
