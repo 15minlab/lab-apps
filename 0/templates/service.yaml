@@ -9,4 +9,4 @@ spec:
     - port: 22
       targetPort: 22
   selector:
-    app: workbench
+    app: mariahi-workbench
