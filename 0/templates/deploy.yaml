@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
       - name: workbench
-        image: 'quay.apps.hlab.linsoft.local/15ml/lab-workbench@sha256:8490dfada72936c5cb5c03516cdf31352b0d1dd135fdab99b138bf0b3f977b36'
+        image: 'quay.apps.hlab.linsoft.local/15ml/lab-workbench@sha256:79e73ee15418947126658243b752693b91e1884cc82c95163845f4b5f7768a9a'
         ports:
         - containerPort: 22
           protocol: TCP
