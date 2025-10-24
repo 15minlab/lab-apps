@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
       - name: workbench
-        image: 'quay.apps.hlab.linsoft.local/15ml/lab-workbench@sha256:ba4177a60e69a499f04d9d135f283867a2f5cfc21131b0779aa786ea1a8a34d1'
+        image: 'quay.apps.hlab.linsoft.local/15ml/lab-workbench:0.0.1'
         ports:
         - containerPort: 22
           protocol: TCP
@@ -31,10 +31,7 @@ spec:
             memory: 64Mi
         terminationMessagePath: /dev/termination-log
         terminationMessagePolicy: File
-        imagePullPolicy: IfNotPresent
-        volumeMounts:
-        - name: var-empty
-          mountPath: /var/empty
+        imagePullPolicy: Always
       restartPolicy: Always
       terminationGracePeriodSeconds: 30
       dnsPolicy: ClusterFirst
@@ -44,9 +41,6 @@ spec:
       imagePullSecrets:
       - name: lab-registry-secret
       schedulerName: default-scheduler
-      volumes:
-      - name: var-empty
-        emptyDir: {}
   strategy:
     type: RollingUpdate
     rollingUpdate:
